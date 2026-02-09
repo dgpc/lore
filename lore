@@ -5,8 +5,8 @@ import argparse
 import subprocess
 import os
 import sys
-import requests # Added for remote compilation
-import json # Added for JSON parsing
+import requests
+import json
 
 # EdisonV3 USB constants
 RELESE_VENDOR_ID = 0x16D0
@@ -17,6 +17,55 @@ EV3_WEBUSB_CMD_PUT_USER_PROGRAM = 0x14
 
 # Remote API URL for compilation
 REMOTE_COMPILE_API_URL = "https://api.edisonrobotics.net/ep/compile/ep_compile_usb_v3"
+
+def transpile_logo_to_py(logo_file_path: str, py_file_path: str):
+    """
+    Transpiles a .logo file with basic LOGO commands to an EdPy .py file.
+    """
+    print(f"Transpiling {logo_file_path} to {py_file_path}...")
+    
+    edpy_code = [
+        "import Ed",
+        "",
+        "# Standard EdPy setup",
+        "Ed.EdisonVersion = Ed.V3",
+        "Ed.DistanceUnits = Ed.CM",
+        "Ed.Tempo = Ed.TEMPO_MEDIUM",
+        ""
+    ]
+
+    with open(logo_file_path, 'r') as f:
+        for line in f:
+            line = line.strip().upper()
+            if not line:
+                continue
+
+            parts = line.split()
+            command = parts[0]
+            
+            try:
+                if command == "FORWARD" and len(parts) == 2:
+                    value = int(parts[1])
+                    edpy_code.append(f"Ed.Drive(Ed.FORWARD, Ed.SPEED_5, {value})")
+                elif command == "BACK" and len(parts) == 2:
+                    value = int(parts[1])
+                    edpy_code.append(f"Ed.Drive(Ed.BACKWARD, Ed.SPEED_5, {value})")
+                elif command == "LEFT" and len(parts) == 2:
+                    value = int(parts[1])
+                    edpy_code.append(f"Ed.Drive(Ed.SPIN_LEFT, Ed.SPEED_5, {value})")
+                elif command == "RIGHT" and len(parts) == 2:
+                    value = int(parts[1])
+                    edpy_code.append(f"Ed.Drive(Ed.SPIN_RIGHT, Ed.SPEED_5, {value})")
+                else:
+                    print(f"Warning: Unsupported LOGO command '{line}' found. Skipping.", file=sys.stderr)
+            except (ValueError, IndexError):
+                print(f"Warning: Invalid format for LOGO command '{line}'. Skipping.", file=sys.stderr)
+
+    with open(py_file_path, 'w') as f:
+        f.write("\n".join(edpy_code))
+    
+    print("Transpilation successful.")
+
 
 def process_api_hex_string(input_hex_str):
     """
@@ -39,8 +88,6 @@ def process_api_hex_string(input_hex_str):
 def calculate_checksum(data: bytearray) -> int:
     """
     Calculates the 16-bit XOR checksum based on the web app's logic.
-    The web app uses a peculiar XOR checksum where it alternates between
-    the lower byte and a shifted higher byte of a 16-bit word.
     """
     checksum = 0
     lower_byte = True
@@ -51,7 +98,7 @@ def calculate_checksum(data: bytearray) -> int:
         else:
             checksum ^= (byte_val << 8)
             lower_byte = True
-    return checksum & 0xFFFF # Ensure it's a 16-bit value
+    return checksum & 0xFFFF
 
 def find_edison_v3():
     """Finds the Edison V3 device."""
@@ -84,9 +131,6 @@ def setup_device(dev):
                     print(f"Kernel driver detached from interface {intf.bInterfaceNumber}.")
                 except usb.core.USBError as e:
                     print(f"Could not detach kernel driver from interface {intf.bInterfaceNumber}: {e}", file=sys.stderr)
-                    pass
-            else:
-                print(f"Kernel driver not active for interface {intf.bInterfaceNumber}.")
     
     print("Claiming interface 0...")
     usb.util.claim_interface(dev, 0)
@@ -113,35 +157,27 @@ def put_user_program(dev, user_program_data: bytearray):
     size = len(user_program_data)
     checksum = calculate_checksum(user_program_data)
 
-    # Prepare header (EV3_WEBUSB_HEADER, EV3_WEBUSB_CMD_PUT_USER_PROGRAM, size_L, size_H, checksum_L, checksum_H, 0, 0)
     header = bytearray([
         EV3_WEBUSB_HEADER,
         EV3_WEBUSB_CMD_PUT_USER_PROGRAM,
-        size & 0xFF,
-        (size >> 8) & 0xFF,
-        checksum & 0xFF,
-        (checksum >> 8) & 0xFF,
+        size & 0xFF, (size >> 8) & 0xFF,
+        checksum & 0xFF, (checksum >> 8) & 0xFF,
         0, 0
     ])
 
     print("Sending program header...")
-    transfer_out(dev, 0x01, header) # Assuming endpoint 1 for OUT
-
-    # Read response for header (8 bytes expected)
-    response = transfer_in(dev, 0x81, 8) # Assuming endpoint 1 for IN (0x81 is IN endpoint 1)
+    transfer_out(dev, 0x01, header)
+    response = transfer_in(dev, 0x81, 8)
     if not (len(response) == 8 and response[0] == EV3_WEBUSB_HEADER and response[1] == EV3_WEBUSB_CMD_PUT_USER_PROGRAM):
         raise IOError(f"Invalid response to program header: {response.tobytes().hex()}")
     
     print("Sending program data...")
-    transfer_out(dev, 0x01, user_program_data) # Send program data
-
-    # Read final response (8 bytes expected)
+    transfer_out(dev, 0x01, user_program_data)
     response = transfer_in(dev, 0x81, 8)
     if not (len(response) == 8 and response[0] == EV3_WEBUSB_HEADER and response[1] == EV3_WEBUSB_CMD_PUT_USER_PROGRAM and response[2] == 1):
         raise IOError(f"Program transfer failed with response: {response.tobytes().hex()}")
     
     print("Program transferred successfully!")
-
 
 def build_mpy_cross(mpy_cross_path: str):
     """Builds the mpy-cross executable if it doesn't exist."""
@@ -163,11 +199,10 @@ def compile_remotely(py_file_path: str, output_mpy_file: str):
         
         print(f"Sending {py_file_path} to remote compiler API...")
         response = requests.post(REMOTE_COMPILE_API_URL, data=python_code, headers={'Content-Type': 'text/plain'})
-        response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
+        response.raise_for_status()
         
         json_response = response.json()
         
-        # Check for top-level error or if compile key is false
         if json_response.get("error") or not json_response.get("compile", True):
             error_message = "Unknown remote compilation error."
             nested_message = json_response.get("message")
@@ -177,12 +212,12 @@ def compile_remotely(py_file_path: str, output_mpy_file: str):
                     if nested_json.get("error") and nested_json.get("messages"):
                         error_message = "; ".join(nested_json["messages"])
                 except json.JSONDecodeError:
-                    error_message = nested_message # If it's not JSON, just use the string
+                    error_message = nested_message
             raise RuntimeError(f"Remote compilation error: {error_message}")
         
         hex_data = json_response.get("hex")
         if not hex_data:
-            raise RuntimeError("Remote compiler did not return 'hex' data (even though no explicit error was reported).")
+            raise RuntimeError("Remote compiler did not return 'hex' data.")
             
         compiled_bytes = bytes.fromhex(hex_data)
         
@@ -196,28 +231,30 @@ def compile_remotely(py_file_path: str, output_mpy_file: str):
     except ValueError as e:
         raise RuntimeError(f"Error processing remote compiler response: {e}")
 
-
 def compile_app(app_name: str, mpy_cross_path: str, use_local_compiler: bool) -> str:
     """
-    Compiles a Python file for a given application to .mpy.
-    Can use either local mpy-cross or a remote API.
-    Returns the path to the compiled .mpy file.
+    Detects if an app is LOGO or Python, transpiles if needed, then compiles to .mpy.
     """
-    py_file_path = os.path.join("apps", app_name, "main.py")
-    if not os.path.exists(py_file_path):
-        raise FileNotFoundError(f"Application file not found: {py_file_path}")
+    app_dir = os.path.join("apps", app_name)
+    py_file_path = os.path.join(app_dir, "main.py")
+    logo_file_path = os.path.join(app_dir, "main.logo")
+
+    if os.path.exists(logo_file_path):
+        transpile_logo_to_py(logo_file_path, py_file_path)
+    elif not os.path.exists(py_file_path):
+        raise FileNotFoundError(f"Application source file not found: checked for main.py and main.logo in {app_dir}")
     
-    output_mpy_file = os.path.join("apps", app_name, "main.mpy")
+    output_mpy_file = os.path.join(app_dir, "main.mpy")
 
     if use_local_compiler:
-        build_mpy_cross(mpy_cross_path) # Ensure mpy-cross is built locally
+        build_mpy_cross(mpy_cross_path)
         print(f"Compiling {py_file_path} to {output_mpy_file} using local {mpy_cross_path}...")
         try:
             subprocess.run([mpy_cross_path, "-o", output_mpy_file, py_file_path], check=True)
             print("Local compilation successful.")
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"Local mpy-cross compilation failed: {e}")
-    else: # Default to remote compilation
+    else:
         compile_remotely(py_file_path, output_mpy_file)
 
     return output_mpy_file
@@ -229,24 +266,17 @@ def flash_app(mpy_file_path: str):
     if not os.path.exists(mpy_file_path):
         raise FileNotFoundError(f"Compiled MicroPython file not found: {mpy_file_path}. Please build it first.")
 
-    # Read the .mpy file content
-    print(f"Reading compiled program from {mpy_file_path}...")
     with open(mpy_file_path, 'rb') as f:
         mpy_bytes = f.read()
     
-    # The web app passes a hex string to processAPIHexString, so we convert our bytes to hex string first.
     mpy_hex_string = mpy_bytes.hex()
-
-    # Convert hex string to bytearray using our re-implemented web app logic
     program_data_to_send = process_api_hex_string(mpy_hex_string)
 
-    # Find and setup Edison V3
     print("Starting Edison V3 device flashing process.")
     dev = find_edison_v3()
     print("Device found. Proceeding with setup.")
     setup_device(dev)
     
-    # Flash the program
     try:
         print("Attempting to put user program...")
         put_user_program(dev, program_data_to_send)
@@ -274,46 +304,46 @@ def flash_app(mpy_file_path: str):
         usb.util.dispose_resources(dev)
         print("USB resources disposed.")
 
-
 def main():
     parser = argparse.ArgumentParser(description="Lore: Edison V3 MicroPython CLI Tool for offline development.")
     parser.add_argument("--mpy-cross", 
                         default="./micropython-1.27.0/mpy-cross/build/mpy-cross",
-                        help="Path to the mpy-cross executable. Defaults to ./micropython-1.27.0/mpy-cross/build/mpy-cross")
+                        help="Path to the mpy-cross executable.")
     
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
-    # Build subcommand
-    build_parser = subparsers.add_parser("build", help="Compile a MicroPython application.")
-    build_parser.add_argument("app_name", help="Name of the application to compile (e.g., line_following).")
+    build_parser = subparsers.add_parser("build", help="Compile a MicroPython or LOGO application.")
+    build_parser.add_argument("app_name", help="Name of the application to compile.")
     build_parser.add_argument("--local-compile", action="store_true", 
-                              help="Use the local mpy-cross compiler instead of the default remote Edison API for compilation.")
+                              help="Use the local mpy-cross compiler (experimental).")
 
-    # Flash subcommand
-    flash_parser = subparsers.add_parser("flash", help="Flash a compiled MicroPython application to the Edison V3.")
-    flash_parser.add_argument("app_name", help="Name of the application to flash (e.g., line_following).")
+    flash_parser = subparsers.add_parser("flash", help="Flash a compiled application to the Edison V3.")
+    flash_parser.add_argument("app_name", help="Name of the application to flash.")
 
     args = parser.parse_args()
 
-    # If no subcommand is given, print help and exit
     if args.command is None:
         parser.print_help()
         sys.exit(1)
 
     try:
-        # Check for requests library if remote compile is requested (now the default)
         if args.command == "build" and not args.local_compile:
             try:
                 import requests
                 import json
             except ImportError:
-                raise RuntimeError("The 'requests' and 'json' libraries are required for remote compilation. Please install 'requests': pip install requests")
+                raise RuntimeError("The 'requests' library is required. Please run: pip install requests")
 
         if args.command == "build":
             compile_app(args.app_name, args.mpy_cross, args.local_compile)
-            print(f"Application '{args.app_name}' compiled successfully.")
+            print(f"Application '{args.app_name}' built successfully.")
         elif args.command == "flash":
+            # Note: flash always uses the pre-built .mpy file, it doesn't trigger a build.
             mpy_file = os.path.join("apps", args.app_name, "main.mpy")
+            if not os.path.exists(mpy_file):
+                print(f"'{mpy_file}' not found. Building application first...")
+                compile_app(args.app_name, args.mpy_cross, False) # Defaults to remote compile for build-on-flash
+            
             flash_app(mpy_file)
             print(f"Application '{args.app_name}' flashed successfully.")
     except Exception as e:
@@ -321,7 +351,6 @@ def main():
         sys.exit(1)
 
 if __name__ == "__main__":
-    # Add shebang for direct execution
     if sys.version_info < (3, 8):
         print("Python 3.8 or newer is required.", file=sys.stderr)
         sys.exit(1)

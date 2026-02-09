@@ -11,7 +11,29 @@ This document outlines the development plan and tasks for the `lore` project.
 - [x] Refactor `lore` to use `build` and `flash` subcommands.
 - [x] Structure applications into an `apps/` directory.
 
-## Phase 2: Make Local Compilation Reliable
+## Phase 2: LOGO to EdPy Transpiler
+
+The goal of this phase is to enhance the `build` command to automatically transpile a `.logo` file into a functional `main.py` file if one is present in the application directory.
+
+- [ ] **Transpiler Scaffolding:**
+    - [ ] Modify the `build` command's logic to detect `main.logo` and trigger a transpilation step.
+    - [ ] Implement the basic file I/O for reading a `.logo` file and writing a `.py` file.
+
+- [ ] **Implement Basic "Turtle" Graphics Commands:**
+    - [ ] Implement parsing for `FORWARD <value>` and `BACK <value>`, translating them to `Ed.Drive(Ed.FORWARD, Ed.SPEED_5, <value>)` and `Ed.Drive(Ed.BACKWARD, Ed.SPEED_5, <value>)` respectively.
+    - [ ] Implement parsing for `LEFT <degrees>` and `RIGHT <degrees>`, translating them to `Ed.Drive(Ed.SPIN_LEFT, Ed.SPEED_5, <degrees>)` and `Ed.Drive(Ed.SPIN_RIGHT, Ed.SPEED_5, <degrees>)` respectively.
+
+- [ ] **Implement `REPEAT` Loop:**
+    - [ ] Implement parsing for the `REPEAT <count> [ <commands> ]` syntax.
+    - [ ] Translate this into a `for i in range(<count>):` loop in the generated Python code, with the inner `<commands>` correctly indented.
+
+- [ ] **Implement Function Definition (`TO...END`):**
+    - [ ] Implement parsing for the `TO <function_name> ... END` block structure.
+    - [ ] Translate this into a Python function definition: `def <function_name>():`.
+    - [ ] Ensure that calls to the defined LOGO function are correctly translated into Python function calls.
+    - [ ] Consider support for arguments in LOGO functions.
+
+## Phase 3: Make Local Compilation Reliable
 
 The goal of this phase is to make the experimental `--local-compile` feature robust and reliable, providing the same level of correctness and feedback as the remote API.
 
@@ -29,28 +51,6 @@ The goal of this phase is to make the experimental `--local-compile` feature rob
     - [ ] Investigate how `mpy-cross` reports syntax errors.
     - [ ] Modify the `compile_app` function in `lore` to capture and parse `stderr` from the `mpy-cross` subprocess.
     - [ ] Format the local compilation errors to be as clear and informative as the JSON-formatted errors from the remote API.
-
-## Phase 3: LOGO to EdPy Transpiler
-
-The goal of this phase is to create a new `transpile` command in `lore` that converts a `.logo` file into a functional `main.py` file within a new application directory.
-
-- [ ] **Transpiler Scaffolding:**
-    - [ ] Add a `transpile` subcommand to `lore`.
-    - [ ] Implement the basic file I/O for reading a `.logo` file and writing a `.py` file.
-
-- [ ] **Implement Basic "Turtle" Graphics Commands:**
-    - [ ] Implement parsing for `FORWARD <value>` and `BACK <value>`, translating them to `Ed.Drive(Ed.FORWARD, Ed.SPEED_5, <value>)` and `Ed.Drive(Ed.BACKWARD, Ed.SPEED_5, <value>)` respectively.
-    - [ ] Implement parsing for `LEFT <degrees>` and `RIGHT <degrees>`, translating them to `Ed.Drive(Ed.SPIN_LEFT, Ed.SPEED_5, <degrees>)` and `Ed.Drive(Ed.SPIN_RIGHT, Ed.SPEED_5, <degrees>)` respectively.
-
-- [ ] **Implement `REPEAT` Loop:**
-    - [ ] Implement parsing for the `REPEAT <count> [ <commands> ]` syntax.
-    - [ ] Translate this into a `for i in range(<count>):` loop in the generated Python code, with the inner `<commands>` correctly indented.
-
-- [ ] **Implement Function Definition (`TO...END`):**
-    - [ ] Implement parsing for the `TO <function_name> ... END` block structure.
-    - [ ] Translate this into a Python function definition: `def <function_name>():`.
-    - [ ] Ensure that calls to the defined LOGO function are correctly translated into Python function calls.
-    - [ ] Consider support for arguments in LOGO functions.
 
 ## Phase 4: Bootable Dev Environment
 
