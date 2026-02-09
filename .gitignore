@@ -1,0 +1,9 @@
+# Python
+*.pyc
+__pycache__/
+.venv/
+
+# MicroPython
+*.mpy
+micropython-1.27.0/
+micropython-1.27.0.tar.xz

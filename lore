@@ -1,0 +1,328 @@
+#!/usr/bin/env python3
+import usb.core
+import usb.util
+import argparse
+import subprocess
+import os
+import sys
+import requests # Added for remote compilation
+import json # Added for JSON parsing
+
+# EdisonV3 USB constants
+RELESE_VENDOR_ID = 0x16D0
+RELESE_PRODUCT_ID = 0x1207
+
+EV3_WEBUSB_HEADER = 0x58
+EV3_WEBUSB_CMD_PUT_USER_PROGRAM = 0x14
+
+# Remote API URL for compilation
+REMOTE_COMPILE_API_URL = "https://api.edisonrobotics.net/ep/compile/ep_compile_usb_v3"
+
+def process_api_hex_string(input_hex_str):
+    """
+    Converts a hexadecimal string into a bytearray,
+    matching the logic of the web app's processAPIHexString function.
+    """
+    prog_size = len(input_hex_str) // 2
+    user_prog_data = bytearray(prog_size)
+    
+    for i in range(0, len(input_hex_str), 2):
+        num_string = "0x" + input_hex_str[i:i+2]
+        num_data = int(num_string, 16)
+        user_prog_data[i // 2] = num_data
+        
+    if prog_size > 2048:
+        print("Warning: Program size exceeds 2048 bytes. This might cause issues on the device.", file=sys.stderr)
+    
+    return user_prog_data
+
+def calculate_checksum(data: bytearray) -> int:
+    """
+    Calculates the 16-bit XOR checksum based on the web app's logic.
+    The web app uses a peculiar XOR checksum where it alternates between
+    the lower byte and a shifted higher byte of a 16-bit word.
+    """
+    checksum = 0
+    lower_byte = True
+    for byte_val in data:
+        if lower_byte:
+            checksum ^= byte_val
+            lower_byte = False
+        else:
+            checksum ^= (byte_val << 8)
+            lower_byte = True
+    return checksum & 0xFFFF # Ensure it's a 16-bit value
+
+def find_edison_v3():
+    """Finds the Edison V3 device."""
+    print("Attempting to find Edison V3 device...")
+    dev = usb.core.find(idVendor=RELESE_VENDOR_ID, idProduct=RELESE_PRODUCT_ID)
+    if dev is None:
+        raise ValueError("Edison V3 not found. Is it connected and powered on?")
+    print(f"Edison V3 device found: {dev}")
+    return dev
+
+def setup_device(dev):
+    """Configures the USB device for communication."""
+    print("Setting configuration...")
+    try:
+        dev.set_configuration()
+        print("Configuration set.")
+    except usb.core.USBError as e:
+        if "Access denied" in str(e):
+            print("Error: Access denied to USB device. You might need to run this script with sudo or ensure appropriate udev rules are in place.", file=sys.stderr)
+            sys.exit(1)
+        raise
+
+    print("Checking and detaching kernel drivers...")
+    for cfg in dev:
+        for intf in cfg:
+            if dev.is_kernel_driver_active(intf.bInterfaceNumber):
+                try:
+                    print(f"Detaching kernel driver from interface {intf.bInterfaceNumber}...")
+                    dev.detach_kernel_driver(intf.bInterfaceNumber)
+                    print(f"Kernel driver detached from interface {intf.bInterfaceNumber}.")
+                except usb.core.USBError as e:
+                    print(f"Could not detach kernel driver from interface {intf.bInterfaceNumber}: {e}", file=sys.stderr)
+                    pass
+            else:
+                print(f"Kernel driver not active for interface {intf.bInterfaceNumber}.")
+    
+    print("Claiming interface 0...")
+    usb.util.claim_interface(dev, 0)
+    print("Interface 0 claimed.")
+    
+    return dev
+
+def transfer_out(dev, endpoint_address, data):
+    """Performs a USB bulk transfer out."""
+    print(f"Transferring {len(data)} bytes OUT to endpoint {hex(endpoint_address)}...")
+    bytes_sent = dev.write(endpoint_address, data)
+    print(f"Sent {bytes_sent} bytes OUT.")
+    return bytes_sent
+
+def transfer_in(dev, endpoint_address, length):
+    """Performs a USB bulk transfer in."""
+    print(f"Transferring {length} bytes IN from endpoint {hex(endpoint_address)}...")
+    received_data = dev.read(endpoint_address, length)
+    print(f"Received {len(received_data)} bytes IN.")
+    return received_data
+
+def put_user_program(dev, user_program_data: bytearray):
+    """Sends the user program to the Edison V3."""
+    size = len(user_program_data)
+    checksum = calculate_checksum(user_program_data)
+
+    # Prepare header (EV3_WEBUSB_HEADER, EV3_WEBUSB_CMD_PUT_USER_PROGRAM, size_L, size_H, checksum_L, checksum_H, 0, 0)
+    header = bytearray([
+        EV3_WEBUSB_HEADER,
+        EV3_WEBUSB_CMD_PUT_USER_PROGRAM,
+        size & 0xFF,
+        (size >> 8) & 0xFF,
+        checksum & 0xFF,
+        (checksum >> 8) & 0xFF,
+        0, 0
+    ])
+
+    print("Sending program header...")
+    transfer_out(dev, 0x01, header) # Assuming endpoint 1 for OUT
+
+    # Read response for header (8 bytes expected)
+    response = transfer_in(dev, 0x81, 8) # Assuming endpoint 1 for IN (0x81 is IN endpoint 1)
+    if not (len(response) == 8 and response[0] == EV3_WEBUSB_HEADER and response[1] == EV3_WEBUSB_CMD_PUT_USER_PROGRAM):
+        raise IOError(f"Invalid response to program header: {response.tobytes().hex()}")
+    
+    print("Sending program data...")
+    transfer_out(dev, 0x01, user_program_data) # Send program data
+
+    # Read final response (8 bytes expected)
+    response = transfer_in(dev, 0x81, 8)
+    if not (len(response) == 8 and response[0] == EV3_WEBUSB_HEADER and response[1] == EV3_WEBUSB_CMD_PUT_USER_PROGRAM and response[2] == 1):
+        raise IOError(f"Program transfer failed with response: {response.tobytes().hex()}")
+    
+    print("Program transferred successfully!")
+
+
+def build_mpy_cross(mpy_cross_path: str):
+    """Builds the mpy-cross executable if it doesn't exist."""
+    if not os.path.exists(mpy_cross_path):
+        print("mpy-cross not found, attempting to build it using 'make'...")
+        try:
+            subprocess.run(["make"], check=True)
+            print("'make' completed successfully. mpy-cross should now be available.")
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            raise RuntimeError(f"Error: 'make' failed or was not found. Please build mpy-cross manually.", e)
+
+def compile_remotely(py_file_path: str, output_mpy_file: str):
+    """
+    Compiles a Python file using the remote Edison API and saves the resulting .mpy bytecode.
+    """
+    try:
+        with open(py_file_path, 'r') as f:
+            python_code = f.read()
+        
+        print(f"Sending {py_file_path} to remote compiler API...")
+        response = requests.post(REMOTE_COMPILE_API_URL, data=python_code, headers={'Content-Type': 'text/plain'})
+        response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
+        
+        json_response = response.json()
+        
+        # Check for top-level error or if compile key is false
+        if json_response.get("error") or not json_response.get("compile", True):
+            error_message = "Unknown remote compilation error."
+            nested_message = json_response.get("message")
+            if nested_message:
+                try:
+                    nested_json = json.loads(nested_message)
+                    if nested_json.get("error") and nested_json.get("messages"):
+                        error_message = "; ".join(nested_json["messages"])
+                except json.JSONDecodeError:
+                    error_message = nested_message # If it's not JSON, just use the string
+            raise RuntimeError(f"Remote compilation error: {error_message}")
+        
+        hex_data = json_response.get("hex")
+        if not hex_data:
+            raise RuntimeError("Remote compiler did not return 'hex' data (even though no explicit error was reported).")
+            
+        compiled_bytes = bytes.fromhex(hex_data)
+        
+        with open(output_mpy_file, 'wb') as f:
+            f.write(compiled_bytes)
+            
+        print(f"Remote compilation successful. Saved to {output_mpy_file}")
+        
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"Failed to connect to remote compiler API: {e}")
+    except ValueError as e:
+        raise RuntimeError(f"Error processing remote compiler response: {e}")
+
+
+def compile_app(app_name: str, mpy_cross_path: str, use_local_compiler: bool) -> str:
+    """
+    Compiles a Python file for a given application to .mpy.
+    Can use either local mpy-cross or a remote API.
+    Returns the path to the compiled .mpy file.
+    """
+    py_file_path = os.path.join("apps", app_name, "main.py")
+    if not os.path.exists(py_file_path):
+        raise FileNotFoundError(f"Application file not found: {py_file_path}")
+    
+    output_mpy_file = os.path.join("apps", app_name, "main.mpy")
+
+    if use_local_compiler:
+        build_mpy_cross(mpy_cross_path) # Ensure mpy-cross is built locally
+        print(f"Compiling {py_file_path} to {output_mpy_file} using local {mpy_cross_path}...")
+        try:
+            subprocess.run([mpy_cross_path, "-o", output_mpy_file, py_file_path], check=True)
+            print("Local compilation successful.")
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"Local mpy-cross compilation failed: {e}")
+    else: # Default to remote compilation
+        compile_remotely(py_file_path, output_mpy_file)
+
+    return output_mpy_file
+
+def flash_app(mpy_file_path: str):
+    """
+    Flashes a pre-compiled .mpy file to the Edison V3.
+    """
+    if not os.path.exists(mpy_file_path):
+        raise FileNotFoundError(f"Compiled MicroPython file not found: {mpy_file_path}. Please build it first.")
+
+    # Read the .mpy file content
+    print(f"Reading compiled program from {mpy_file_path}...")
+    with open(mpy_file_path, 'rb') as f:
+        mpy_bytes = f.read()
+    
+    # The web app passes a hex string to processAPIHexString, so we convert our bytes to hex string first.
+    mpy_hex_string = mpy_bytes.hex()
+
+    # Convert hex string to bytearray using our re-implemented web app logic
+    program_data_to_send = process_api_hex_string(mpy_hex_string)
+
+    # Find and setup Edison V3
+    print("Starting Edison V3 device flashing process.")
+    dev = find_edison_v3()
+    print("Device found. Proceeding with setup.")
+    setup_device(dev)
+    
+    # Flash the program
+    try:
+        print("Attempting to put user program...")
+        put_user_program(dev, program_data_to_send)
+        print("Program flashed to Edison V3 successfully!")
+    finally:
+        print("Flashing process finished. Releasing resources.")
+        try:
+            print("Releasing interface 0...")
+            usb.util.release_interface(dev, 0)
+            print("Interface 0 released.")
+        except usb.core.USBError as e:
+            print(f"Warning: Could not release interface 0: {e}", file=sys.stderr)
+        
+        try:
+            print("Attempting to re-attach kernel driver...")
+            dev.attach_kernel_driver(0)
+            print("Kernel driver re-attached.")
+        except usb.core.USBError as e:
+            if "No such device" not in str(e):
+                print(f"Warning: Could not re-attach kernel driver: {e}", file=sys.stderr)
+            else:
+                print("Kernel driver attachment skipped (device not found, possibly disconnected).")
+        
+        print("Disposing USB resources.")
+        usb.util.dispose_resources(dev)
+        print("USB resources disposed.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Lore: Edison V3 MicroPython CLI Tool for offline development.")
+    parser.add_argument("--mpy-cross", 
+                        default="./micropython-1.27.0/mpy-cross/build/mpy-cross",
+                        help="Path to the mpy-cross executable. Defaults to ./micropython-1.27.0/mpy-cross/build/mpy-cross")
+    
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # Build subcommand
+    build_parser = subparsers.add_parser("build", help="Compile a MicroPython application.")
+    build_parser.add_argument("app_name", help="Name of the application to compile (e.g., line_following).")
+    build_parser.add_argument("--local-compile", action="store_true", 
+                              help="Use the local mpy-cross compiler instead of the default remote Edison API for compilation.")
+
+    # Flash subcommand
+    flash_parser = subparsers.add_parser("flash", help="Flash a compiled MicroPython application to the Edison V3.")
+    flash_parser.add_argument("app_name", help="Name of the application to flash (e.g., line_following).")
+
+    args = parser.parse_args()
+
+    # If no subcommand is given, print help and exit
+    if args.command is None:
+        parser.print_help()
+        sys.exit(1)
+
+    try:
+        # Check for requests library if remote compile is requested (now the default)
+        if args.command == "build" and not args.local_compile:
+            try:
+                import requests
+                import json
+            except ImportError:
+                raise RuntimeError("The 'requests' and 'json' libraries are required for remote compilation. Please install 'requests': pip install requests")
+
+        if args.command == "build":
+            compile_app(args.app_name, args.mpy_cross, args.local_compile)
+            print(f"Application '{args.app_name}' compiled successfully.")
+        elif args.command == "flash":
+            mpy_file = os.path.join("apps", args.app_name, "main.mpy")
+            flash_app(mpy_file)
+            print(f"Application '{args.app_name}' flashed successfully.")
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    # Add shebang for direct execution
+    if sys.version_info < (3, 8):
+        print("Python 3.8 or newer is required.", file=sys.stderr)
+        sys.exit(1)
+    main()
