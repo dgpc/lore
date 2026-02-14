@@ -18,7 +18,7 @@ Traditionally, programming the Edison V3 robot often involves using web-based in
 *   **Local Development Workflow:** Write MicroPython code in a local editor and manage your projects directly on your machine.
 *   **Command-Line Uploads:** Upload code to the robot directly from your terminal, bypassing the need to interact with web interfaces for flashing.
 *   **Facilitation of AI-Assisted Coding:** The tight feedback loop, without manual copy-pasting, creates an environment for using AI-assisted coding tools like Gemini, Claude Code, Cortex Code, and Codex to write and iterate on code for the Edison robot.
-*   **Choice of Compilation Method:** `lore` defaults to using the official remote Edison API for compilation (which requires an internet connection for maximum compatibility). It also offers an **experimental** `--local-compile` option for offline compilation using `mpy-cross`.
+*   **Choice of Compilation Method:** `lore` defaults to using the official remote Edison API for compilation (which requires an internet connection). It also offers an **experimental** `--local-compile` option for offline compilation using `mpy-cross`.
 
 ## Future Work
 
@@ -43,7 +43,7 @@ To use `lore`, follow these steps:
 2.  **Install Dependencies**: Install the necessary Python libraries:
 
     ```bash
-    pip install pyusb requests
+    pip install pyusb requests lark
     ```
 
 3.  **Create Your Application**: Place your MicroPython `.py` files within the `apps/<your_app_name>/` directory. For example, `apps/line_following/main.py`.
@@ -60,17 +60,19 @@ To use `lore`, follow these steps:
 
     ### Experimental Local Compilation
 
-    Local compilation using `mpy-cross` is an **experimental** feature and is **not yet working end-to-end** for all programs due to MicroPython version incompatibilities with the Edison V3 firmware. This option allows `lore` to operate without an internet connection for compilation.
+    Local compilation using `mpy-cross` is an **experimental** feature. The locally compiled `.mpy` files use a different qstr encoding than the remote compiler (full string names vs. pre-defined firmware qstr IDs), and have not yet been validated on robot hardware.
 
-    If you wish to experiment with local compilation, you must first build `mpy-cross`:
+    `lore` includes a local EdPy validator that checks for unsupported features (floats, strings, lists, dicts, tuples, non-Ed imports, try/except, classes) before compilation, matching the remote compiler's restrictions.
+
+    To use local compilation, you must first build `mpy-cross`:
 
     ```bash
     make
     ```
 
-    **Note:** Installing the MicroPython dependency (`make`) is only required if you intend to use this experimental local compilation feature.
+    **Note:** `make` will download and build MicroPython 1.27.0 (requires a C compiler).
 
-    Then, you can compile locally:
+    Then compile locally:
 
     ```bash
     ./lore build <your_app_name> --local-compile

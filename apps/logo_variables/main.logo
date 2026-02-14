@@ -1,0 +1,15 @@
+MAKE "distance 50
+MAKE "turn 90
+
+FORWARD :distance
+RIGHT :turn
+
+MAKE "score 75
+IFELSE :score >= 60 [FORWARD 100] [BACK 20]
+
+MAKE "count 0
+REPEAT 4 [
+  MAKE "count :count + 1
+  FORWARD THING "distance
+  RIGHT THING "turn
+]
