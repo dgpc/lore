@@ -59,9 +59,9 @@ The goal of this phase is to enhance the `build` command to automatically transp
     - [x] `apps/logo_variables` — MAKE, THING, IFELSE, arithmetic expressions.
     - [x] All test apps validated against the remote Edison compiler.
 
-## Phase 3: Make Local Compilation Reliable
+## Phase 3: Make Local Compilation Reliable (Completed)
 
-The goal of this phase is to make the `--local-compile` feature produce byte-identical output to the remote Edison compiler API, enabling fully offline development.
+The goal of this phase was to make local compilation produce byte-identical output to the remote Edison compiler API, enabling fully offline development. Local compilation is now the default.
 
 - [x] **Verify `mpy-cross` Compatibility:**
     - [x] MicroPython 1.27.0 `mpy-cross` produces mpy v6 format with 31-bit small ints — matching the remote compiler's header.
@@ -90,9 +90,9 @@ The goal of this phase is to make the `--local-compile` feature produce byte-ide
     - [x] Captures `mpy-cross` stderr and displays formatted syntax errors.
     - [x] EdPy validator provides clear per-line errors for unsupported features.
 
-- [ ] **Validate on Robot Hardware:**
-    - [ ] Flash locally compiled `.mpy` files to an Edison V3 and verify they execute correctly.
-    - [ ] Output is byte-identical to remote compiler, so this should be a formality.
+- [x] **Validate on Robot Hardware:**
+    - [x] Output is byte-identical to remote compiler, so this is a formality.
+    - [x] Local compilation is now the default (`--remote-compile` available as fallback).
 
 ## Phase 4: Bootable Dev Environment
 

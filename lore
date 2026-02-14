@@ -749,8 +749,8 @@ def main():
 
     build_parser = subparsers.add_parser("build", help="Compile a LOGO or MicroPython application.")
     build_parser.add_argument("app_name", help="Name of the application to compile.")
-    build_parser.add_argument("--local-compile", action="store_true",
-                              help="Use local mpy-cross compiler (experimental).")
+    build_parser.add_argument("--remote-compile", action="store_true",
+                              help="Use remote Edison API compiler instead of local mpy-cross.")
 
     flash_parser = subparsers.add_parser("flash", help="Flash a compiled application.")
     flash_parser.add_argument("app_name", help="Name of the application to flash.")
@@ -762,14 +762,15 @@ def main():
         sys.exit(1)
 
     try:
-        if args.command == "build" and not args.local_compile:
+        if args.command == "build" and args.remote_compile:
             try:
                 import requests
             except ImportError:
                 raise RuntimeError("'requests' library is required for remote compilation. Run: pip install requests")
 
         if args.command == "build":
-            compile_app(args.app_name, args.mpy_cross, args.local_compile)
+            use_local = not args.remote_compile
+            compile_app(args.app_name, args.mpy_cross, use_local)
             print(f"Application '{args.app_name}' built successfully.")
         elif args.command == "flash":
             mpy_file = os.path.join("apps", args.app_name, "main.mpy")
