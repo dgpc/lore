@@ -7,7 +7,7 @@ import os
 import sys
 import requests
 import json
-import re
+from lark import Lark, Token, Tree
 
 # EdisonV3 USB constants
 RELESE_VENDOR_ID = 0x16D0
@@ -19,135 +19,145 @@ EV3_WEBUSB_CMD_PUT_USER_PROGRAM = 0x14
 # Remote API URL for compilation
 REMOTE_COMPILE_API_URL = "https://api.edisonrobotics.net/ep/compile/ep_compile_usb_v3"
 
+class LogoToEdPyTranspiler:
+    """Transpiles a LOGO parse tree (from Lark) to EdPy MicroPython code."""
+
+    def __init__(self, tree):
+        self.tree = tree
+        self.functions = {}  # name -> (param_names, body_statements)
+        self._loop_counter = 0
+        self._collect_functions(tree)
+
+    @staticmethod
+    def _tokens(node, token_type):
+        """Get child tokens of a specific type."""
+        return [c for c in node.children if isinstance(c, Token) and c.type == token_type]
+
+    @staticmethod
+    def _subtrees(node):
+        """Get child Tree nodes."""
+        return [c for c in node.children if isinstance(c, Tree)]
+
+    def _collect_functions(self, tree):
+        """First pass: collect function definitions with their parameters."""
+        for stmt in tree.children:
+            node = stmt.children[0]
+            if node.data == "funcdef":
+                name = str(self._tokens(node, "NAME")[0]).upper()
+                params = [str(p)[1:].lower() for p in self._tokens(node, "PARAM")]
+                body = self._subtrees(node)
+                self.functions[name] = (params, body)
+
+    def generate(self):
+        """Generate EdPy Python code from the parse tree."""
+        lines = [
+            "import Ed",
+            "",
+            "# Standard EdPy setup",
+            "Ed.EdisonVersion = Ed.V3",
+            "Ed.DistanceUnits = Ed.CM",
+            "Ed.Tempo = Ed.TEMPO_MEDIUM",
+            ""
+        ]
+        # Emit function definitions
+        for name, (params, body) in self.functions.items():
+            param_str = ", ".join(params)
+            lines.append(f"def {name.lower()}({param_str}):")
+            for stmt in body:
+                lines.extend(self._process_node(stmt.children[0], 1))
+            lines.append("")
+        # Emit main body
+        for stmt in self.tree.children:
+            node = stmt.children[0]
+            if node.data != "funcdef":
+                lines.extend(self._process_node(node, 0))
+        return "\n".join(lines)
+
+    def _process_expr(self, node):
+        """Process an expression node (Token or Tree) into a Python expression string."""
+        if isinstance(node, Token):
+            if node.type == "NUMBER":
+                return str(int(node))
+            elif node.type == "PARAM":
+                return str(node)[1:].lower()
+        if node.data == "add":
+            return f"({self._process_expr(node.children[0])} + {self._process_expr(node.children[1])})"
+        elif node.data == "sub":
+            return f"({self._process_expr(node.children[0])} - {self._process_expr(node.children[1])})"
+        return str(node)
+
+    def _process_node(self, node, indent_level):
+        """Recursively process a single AST node into code lines."""
+        indent = "    " * indent_level
+        data = node.data
+
+        if data == "forward":
+            expr = self._process_expr(node.children[1])
+            return [indent + f"Ed.Drive(Ed.FORWARD, Ed.SPEED_5, {expr})"]
+        elif data == "back":
+            expr = self._process_expr(node.children[1])
+            return [indent + f"Ed.Drive(Ed.BACKWARD, Ed.SPEED_5, {expr})"]
+        elif data == "left":
+            expr = self._process_expr(node.children[1])
+            return [indent + f"Ed.Drive(Ed.SPIN_LEFT, Ed.SPEED_5, {expr})"]
+        elif data == "right":
+            expr = self._process_expr(node.children[1])
+            return [indent + f"Ed.Drive(Ed.SPIN_RIGHT, Ed.SPEED_5, {expr})"]
+        elif data == "repeat":
+            count = self._process_expr(node.children[1])
+            var = f"i{self._loop_counter}"
+            self._loop_counter += 1
+            lines = [indent + f"for {var} in range({count}):"]
+            for child_stmt in self._subtrees(node):
+                lines.extend(self._process_node(child_stmt.children[0], indent_level + 1))
+            return lines
+        elif data == "ifstmt":
+            comp = self._subtrees(node)[0]  # comparison node
+            left = self._process_expr(comp.children[0])
+            op = str(self._tokens(comp, "COMP_OP")[0])
+            if op == "=":
+                op = "=="
+            right = self._process_expr(comp.children[2])
+            lines = [indent + f"if {left} {op} {right}:"]
+            for child_stmt in self._subtrees(node)[1:]:
+                lines.extend(self._process_node(child_stmt.children[0], indent_level + 1))
+            return lines
+        elif data == "funccall":
+            name = str(self._tokens(node, "NAME")[0]).upper()
+            if name not in self.functions:
+                print(f"Warning: Unknown function '{name}'. Skipping.", file=sys.stderr)
+                return []
+            # Build argument list from expr children
+            expr_children = [c for c in node.children if not (isinstance(c, Token) and c.type == "NAME")]
+            args = [self._process_expr(e) for e in expr_children]
+            args_str = ", ".join(args)
+            return [indent + f"{name.lower()}({args_str})"]
+        else:
+            print(f"Warning: Unsupported node type '{data}'. Skipping.", file=sys.stderr)
+            return []
+
+
 def transpile_logo_to_py(logo_file_path: str, py_file_path: str):
     """
-    Transpiles a .logo file with LOGO commands (including REPEAT and TO...END) to an EdPy .py file.
-    This version uses a two-pass approach to handle function definitions by inlining them.
+    Transpiles a .logo file to an EdPy .py file using a Lark grammar parser.
     """
     print(f"Transpiling {logo_file_path} to {py_file_path}...")
 
+    grammar_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.lark")
+    with open(grammar_path, 'r') as f:
+        grammar = f.read()
     with open(logo_file_path, 'r') as f:
-        lines = [line.strip().upper() for line in f if line.strip()]
+        source = f.read()
 
-    # --- Pass 1: Store function definitions ---
-    functions = {}
-    in_function_def = False
-    current_function_name = None
-    
-    for line in lines:
-        if line.startswith("TO "):
-            in_function_def = True
-            current_function_name = line.split()[1]
-            functions[current_function_name] = []
-            continue
-        elif line == "END" and in_function_def:
-            in_function_def = False
-            current_function_name = None
-            continue
-        
-        if in_function_def and current_function_name:
-            functions[current_function_name].append(line)
+    parser = Lark(grammar, parser="lalr")
+    tree = parser.parse(source)
 
-    # --- Pass 2: Generate code by expanding functions and loops ---
-    edpy_code = [
-        "import Ed",
-        "",
-        "# Standard EdPy setup",
-        "Ed.EdisonVersion = Ed.V3",
-        "Ed.DistanceUnits = Ed.CM",
-        "Ed.Tempo = Ed.TEMPO_MEDIUM",
-        ""
-    ]
+    transpiler = LogoToEdPyTranspiler(tree)
+    code = transpiler.generate()
 
-    def process_block(block_lines, indent_level=0):
-        """ Recursively processes a block of LOGO commands. """
-        output = []
-        i = 0
-        while i < len(block_lines):
-            line = block_lines[i]
-            i += 1
-
-            if line.startswith("TO ") or (line == "END" and not block_lines[i-2].startswith("REPEAT")): # Simple check
-                # Skip function definition lines during code generation pass
-                if line == "END":
-                    # Fast-forward past the function body if we somehow re-enter one
-                    while i < len(block_lines) and block_lines[i] != "END":
-                        i+=1
-                continue
-            
-            parts = line.split()
-            command = parts[0]
-            indent = "    " * indent_level
-
-            # Handle REPEAT loops
-            repeat_match = re.match(r"REPEAT\s+(\d+)\s*\[", line)
-            if repeat_match:
-                count = int(repeat_match.group(1))
-                output.append(indent + f"for i in range({count}):")
-                
-                # Find matching ']'
-                bracket_level = 1
-                repeat_block = []
-                while i < len(block_lines):
-                    sub_line = block_lines[i]
-                    i += 1
-                    if "REPEAT" in sub_line and '[' in sub_line:
-                        bracket_level += 1
-                    if ']' in sub_line:
-                        bracket_level -= 1
-                    
-                    if bracket_level == 0:
-                        # process the content inside the brackets
-                        content = sub_line.replace(']', '').strip()
-                        if content:
-                            repeat_block.append(content)
-                        break
-                    else:
-                        repeat_block.append(sub_line)
-                
-                output.extend(process_block(repeat_block, indent_level + 1))
-                continue
-
-            try:
-                # Expand user-defined functions
-                if command in functions:
-                    output.extend(process_block(functions[command], indent_level))
-                # Basic commands
-                elif command == "FORWARD" and len(parts) == 2:
-                    value = int(parts[1])
-                    output.append(indent + f"Ed.Drive(Ed.FORWARD, Ed.SPEED_5, {value})")
-                elif command == "BACK" and len(parts) == 2:
-                    value = int(parts[1])
-                    output.append(indent + f"Ed.Drive(Ed.BACKWARD, Ed.SPEED_5, {value})")
-                elif command == "LEFT" and len(parts) == 2:
-                    value = int(parts[1])
-                    output.append(indent + f"Ed.Drive(Ed.SPIN_LEFT, Ed.SPEED_5, {value})")
-                elif command == "RIGHT" and len(parts) == 2:
-                    value = int(parts[1])
-                    output.append(indent + f"Ed.Drive(Ed.SPIN_RIGHT, Ed.SPEED_5, {value})")
-                elif command:
-                    print(f"Warning: Unsupported LOGO command '{line}' found. Skipping.", file=sys.stderr)
-
-            except (ValueError, IndexError):
-                print(f"Warning: Invalid format for LOGO command '{line}'. Skipping.", file=sys.stderr)
-        return output
-
-    # Process only the main body lines (not inside a TO...END block)
-    main_lines = []
-    in_def = False
-    for line in lines:
-        if line.startswith("TO "):
-            in_def = True
-        if not in_def:
-            main_lines.append(line)
-        if line == "END":
-            in_def = False
-
-    edpy_code.extend(process_block(main_lines))
-    
     with open(py_file_path, 'w') as f:
-        f.write("\n".join(edpy_code))
-    
+        f.write(code)
+
     print("Transpilation successful.")
 
 

@@ -1,0 +1,8 @@
+REPEAT 3 [
+  REPEAT 4 [
+    FORWARD 5
+    RIGHT 90
+  ]
+  FORWARD 10
+  LEFT 120
+]

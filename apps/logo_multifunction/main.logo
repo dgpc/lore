@@ -1,0 +1,15 @@
+TO SIDE
+  FORWARD 10
+END
+
+TO SQUARE
+  REPEAT 4 [
+    SIDE
+    RIGHT 90
+  ]
+END
+
+REPEAT 3 [
+  SQUARE
+  LEFT 120
+]

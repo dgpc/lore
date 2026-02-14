@@ -1,0 +1,9 @@
+TO SPIRAL :SIZE
+  IF :SIZE > 0 [
+    FORWARD :SIZE
+    RIGHT 90
+    SPIRAL :SIZE - 1
+  ]
+END
+
+SPIRAL 10
