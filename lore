@@ -2,6 +2,8 @@
 import usb.core
 import usb.util
 import argparse
+import ast
+import re
 import subprocess
 import os
 import sys
@@ -84,6 +86,8 @@ class LogoToEdPyTranspiler:
             return f"({self._process_expr(node.children[0])} + {self._process_expr(node.children[1])})"
         elif node.data == "sub":
             return f"({self._process_expr(node.children[0])} - {self._process_expr(node.children[1])})"
+        elif node.data == "thing":
+            return str(self._tokens(node, "QNAME")[0])[1:].lower()
         return str(node)
 
     def _process_node(self, node, indent_level):
@@ -122,6 +126,29 @@ class LogoToEdPyTranspiler:
             for child_stmt in self._subtrees(node)[1:]:
                 lines.extend(self._process_node(child_stmt.children[0], indent_level + 1))
             return lines
+        elif data == "ifelsestmt":
+            subtrees = self._subtrees(node)
+            comp = subtrees[0]  # comparison node
+            left = self._process_expr(comp.children[0])
+            op = str(self._tokens(comp, "COMP_OP")[0])
+            if op == "=":
+                op = "=="
+            right = self._process_expr(comp.children[2])
+            true_branch = [s for s in subtrees if s.data == "truebranch"][0]
+            false_branch = [s for s in subtrees if s.data == "falsebranch"][0]
+            lines = [indent + f"if {left} {op} {right}:"]
+            for child_stmt in self._subtrees(true_branch):
+                lines.extend(self._process_node(child_stmt.children[0], indent_level + 1))
+            lines.append(indent + "else:")
+            for child_stmt in self._subtrees(false_branch):
+                lines.extend(self._process_node(child_stmt.children[0], indent_level + 1))
+            return lines
+        elif data == "make":
+            varname = str(self._tokens(node, "QNAME")[0])[1:].lower()
+            # The expr is the last non-keyword child
+            expr_children = [c for c in node.children if not (isinstance(c, Token) and c.type in ("MAKE", "QNAME"))]
+            expr = self._process_expr(expr_children[0])
+            return [indent + f"{varname} = {expr}"]
         elif data == "funccall":
             name = str(self._tokens(node, "NAME")[0]).upper()
             if name not in self.functions:
@@ -254,6 +281,340 @@ def put_user_program(dev, user_program_data: bytearray):
     
     print("Program transferred successfully!")
 
+class EdPyValidator(ast.NodeVisitor):
+    """Validates that a Python AST only uses features supported by EdPy."""
+
+    def __init__(self, filename="main.py"):
+        self.filename = filename
+        self.errors = []
+
+    def _error(self, node, msg):
+        self.errors.append(f"{self.filename}:{node.lineno}: {msg}")
+
+    def _inside_tunestring(self, node):
+        """Check if node is an argument to Ed.TuneString()."""
+        parent = getattr(node, '_parent', None)
+        if not isinstance(parent, ast.Call):
+            return False
+        func = parent.func
+        return (isinstance(func, ast.Attribute) and func.attr == "TuneString"
+                and isinstance(func.value, ast.Name) and func.value.id == "Ed")
+
+    def visit_Constant(self, node):
+        if isinstance(node.value, float):
+            self._error(node, f"constant {node.value} must be an integer value")
+        elif isinstance(node.value, (str, bytes)):
+            if not self._inside_tunestring(node):
+                self._error(node, "string not allowed here")
+        self.generic_visit(node)
+
+    def visit_List(self, node):
+        self._error(node, "list not allowed here")
+        self.generic_visit(node)
+
+    def visit_Dict(self, node):
+        self._error(node, "dict expr not supported in Ed.Py")
+        self.generic_visit(node)
+
+    def visit_Tuple(self, node):
+        self._error(node, "tuple expr not supported in Ed.Py")
+        self.generic_visit(node)
+
+    def visit_Set(self, node):
+        self._error(node, "set expr not supported in Ed.Py")
+        self.generic_visit(node)
+
+    def visit_Import(self, node):
+        for alias in node.names:
+            if alias.name != "Ed":
+                self._error(node, f"only the Ed module can be imported")
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node):
+        self._error(node, "only the Ed module can be imported")
+        self.generic_visit(node)
+
+    def visit_Try(self, node):
+        self._error(node, "try/except not supported in Ed.Py")
+        self.generic_visit(node)
+
+    # Python 3.11+
+    def visit_TryStar(self, node):
+        self._error(node, "try/except not supported in Ed.Py")
+        self.generic_visit(node)
+
+    def visit_ClassDef(self, node):
+        self._error(node, "classes not supported in Ed.Py")
+        self.generic_visit(node)
+
+
+def _set_parents(node):
+    """Set _parent attribute on all AST nodes for parent lookup."""
+    for child in ast.walk(node):
+        for child_node in ast.iter_child_nodes(child):
+            child_node._parent = child
+
+
+def validate_edpy(py_file_path: str):
+    """Validates a Python file against EdPy restrictions. Returns list of error strings."""
+    with open(py_file_path, 'r') as f:
+        source = f.read()
+    try:
+        tree = ast.parse(source, filename=py_file_path)
+    except SyntaxError:
+        return []  # mpy-cross will catch syntax errors
+    _set_parents(tree)
+    validator = EdPyValidator(filename="main.py")
+    validator.visit(tree)
+    return validator.errors
+
+
+# Edison constant values, reverse-engineered from the remote compiler.
+# The remote compiler inlines Ed.CONSTANT references as integer literals.
+EDISON_CONSTANTS = {
+    "V1": 1, "V2": 2, "V3": 3,
+    "CM": 0, "INCH": 1,
+    "FORWARD": 1, "BACKWARD": 2, "SPIN_LEFT": 8, "SPIN_RIGHT": 7, "STOP": 0,
+    "SPEED_1": 1, "SPEED_2": 2, "SPEED_3": 3, "SPEED_4": 4, "SPEED_5": 5,
+    "SPEED_6": 6, "SPEED_7": 7, "SPEED_8": 8, "SPEED_9": 9, "SPEED_10": 10,
+    "ON": 1, "OFF": 0,
+    "TEMPO_VERY_SLOW": 60, "TEMPO_SLOW": 92, "TEMPO_MEDIUM": 125,
+    "TEMPO_FAST": 162, "TEMPO_VERY_FAST": 200,
+    "TIME_SECONDS": 0, "TIME_MILLISECONDS": 1,
+    "KEYPAD_ROUND": 4, "KEYPAD_TRIANGLE": 1, "KEYPAD_NONE": 0,
+    "OBSTACLE_AHEAD": 16, "OBSTACLE_LEFT": 32, "OBSTACLE_RIGHT": 8, "OBSTACLE_NONE": 0,
+    "LINE_ON_BLACK": 1, "LINE_ON_WHITE": 0,
+    "CLAP_NOT_DETECTED": 0, "CLAP_DETECTED": 4,
+    "DISTANCE_UNLIMITED": 1073741823,
+}
+
+
+def inline_ed_constants(py_file_path: str, output_path: str):
+    """Reads a .py file, replaces Ed.CONSTANT references with integer values.
+    Uses regex substitution to preserve original source structure (comments,
+    blank lines, line numbers) so the bytecode line number table matches."""
+    with open(py_file_path, 'r') as f:
+        source = f.read()
+    for name, value in EDISON_CONSTANTS.items():
+        source = re.sub(r'\bEd\.' + name + r'\b', str(value), source)
+    with open(output_path, 'w') as f:
+        f.write(source)
+    return output_path
+
+
+# Edison firmware qstr mapping: name -> Edison static qstr ID.
+# The Edison firmware has a completely different qstr table from standard
+# MicroPython. Reverse-engineered by probing the remote compiler API.
+EDISON_QSTR_IDS = {
+    # Special qstrs
+    "":                     1,
+    "<module>":             7,
+    # Edison API names (methods/properties on Ed module)
+    "DistanceUnits":        10,
+    "Drive":                11,
+    "DriveLeftMotor":       12,
+    "DriveRightMotor":      13,
+    "Ed":                   14,
+    "EdisonVersion":        15,
+    "LeftLed":              17,
+    "LineTrackerLed":       18,
+    "ObstacleDetectionBeam": 20,
+    "PlayBeep":             21,
+    "PlayTone":             23,
+    "PlayTune":             24,
+    "ReadClapSensor":       28,
+    "ReadDistance":          30,
+    "ReadIRData":           32,
+    "ReadKeypad":           33,
+    "ReadLeftLightLevel":   34,
+    "ReadLineState":        35,
+    "ReadLineTracker":      36,
+    "ReadMusicEnd":         37,
+    "ReadObstacleDetection": 38,
+    "ReadRemote":           39,
+    "ReadRightLightLevel":  40,
+    "ResetDistance":         43,
+    "RightLed":             44,
+    "SendIRData":           45,
+    "Tempo":                48,
+    "TimeWait":             49,
+    "TuneString":           50,
+    # Standard Python builtins/names (remapped IDs in Edison firmware)
+    "abs": 101, "all": 102, "any": 103, "append": 104, "args": 105,
+    "bool": 106, "bytearray": 108, "bytes": 110, "callable": 111,
+    "chr": 112, "classmethod": 113, "clear": 114, "close": 115,
+    "copy": 117, "count": 118, "dict": 119, "dir": 120, "divmod": 121,
+    "end": 122, "endswith": 123, "eval": 124, "extend": 126,
+    "find": 127, "format": 128, "get": 130, "getattr": 131,
+    "globals": 132, "hasattr": 133, "hash": 134, "id": 135,
+    "index": 136, "insert": 137, "int": 138, "isalpha": 139,
+    "isdigit": 140, "isinstance": 141, "islower": 142,
+    "issubclass": 144, "isupper": 145, "items": 146, "iter": 147,
+    "join": 148, "key": 149, "keys": 150, "len": 151, "list": 152,
+    "locals": 154, "lower": 155, "lstrip": 156, "map": 158,
+    "next": 160, "object": 161, "open": 162, "ord": 163, "pop": 164,
+    "pow": 166, "range": 168, "read": 169, "remove": 172,
+    "replace": 173, "round": 178, "rstrip": 180, "self": 181,
+    "send": 182, "set": 184, "setattr": 185, "sort": 187,
+    "sorted": 188, "split": 189, "start": 190, "startswith": 191,
+    "staticmethod": 192, "step": 193, "stop": 194, "str": 195,
+    "strip": 196, "sum": 197, "super": 198, "throw": 199,
+    "tuple": 201, "type": 202, "update": 203, "upper": 204,
+    "value": 206, "values": 207, "write": 208, "zip": 209,
+}
+
+# Standard MicroPython static qstr ID -> string name.
+# mpy-cross encodes these as compact static references in .mpy files.
+# Since the Edison firmware has a completely different qstr table, we must
+# convert any standard static qstr that isn't in EDISON_QSTR_IDS to dynamic
+# (embedded string) form so the firmware can resolve it by name.
+# Generated from micropython-1.27.0/mpy-cross/build/genhdr/qstrdefs.generated.h
+STANDARD_QSTR_STRINGS = {
+    0: "", 1: "", 2: "__dir__", 3: "\x0a", 4: " ", 5: "*", 6: "/",
+    7: "<module>", 8: "_", 9: "__call__", 10: "__class__", 11: "__delitem__",
+    12: "__enter__", 13: "__exit__", 14: "__getattr__", 15: "__getitem__",
+    16: "__hash__", 17: "__init__", 18: "__int__", 19: "__iter__",
+    20: "__len__", 21: "__main__", 22: "__module__", 23: "__name__",
+    24: "__new__", 25: "__next__", 26: "__qualname__", 27: "__repr__",
+    28: "__setitem__", 29: "__str__", 30: "ArithmeticError",
+    31: "AssertionError", 32: "AttributeError", 33: "BaseException",
+    34: "EOFError", 35: "Ellipsis", 36: "Exception", 37: "GeneratorExit",
+    38: "ImportError", 39: "IndentationError", 40: "IndexError",
+    41: "KeyError", 42: "KeyboardInterrupt", 43: "LookupError",
+    44: "MemoryError", 45: "NameError", 46: "NoneType",
+    47: "NotImplementedError", 48: "OSError", 49: "OverflowError",
+    50: "RuntimeError", 51: "StopIteration", 52: "SyntaxError",
+    53: "SystemExit", 54: "TypeError", 55: "ValueError",
+    56: "ZeroDivisionError", 57: "abs", 58: "all", 59: "any",
+    60: "append", 61: "args", 62: "bool", 63: "builtins", 64: "bytearray",
+    65: "bytecode", 66: "bytes", 67: "callable", 68: "chr",
+    69: "classmethod", 70: "clear", 71: "close", 72: "const", 73: "copy",
+    74: "count", 75: "dict", 76: "dir", 77: "divmod", 78: "end",
+    79: "endswith", 80: "eval", 81: "exec", 82: "extend", 83: "find",
+    84: "format", 85: "from_bytes", 86: "get", 87: "getattr", 88: "globals",
+    89: "hasattr", 90: "hash", 91: "id", 92: "index", 93: "insert",
+    94: "int", 95: "isalpha", 96: "isdigit", 97: "isinstance",
+    98: "islower", 99: "isspace", 100: "issubclass", 101: "isupper",
+    102: "items", 103: "iter", 104: "join", 105: "key", 106: "keys",
+    107: "len", 108: "list", 109: "little", 110: "locals", 111: "lower",
+    112: "lstrip", 113: "main", 114: "map", 115: "micropython", 116: "next",
+    117: "object", 118: "open", 119: "ord", 120: "pop", 121: "popitem",
+    122: "pow", 123: "print", 124: "range", 125: "read", 126: "readinto",
+    127: "readline", 128: "remove", 129: "replace", 130: "repr",
+    131: "reverse", 132: "rfind", 133: "rindex", 134: "round",
+    135: "rsplit", 136: "rstrip", 137: "self", 138: "send", 139: "sep",
+    140: "set", 141: "setattr", 142: "setdefault", 143: "sort",
+    144: "sorted", 145: "split", 146: "start", 147: "startswith",
+    148: "staticmethod", 149: "step", 150: "stop", 151: "str", 152: "strip",
+    153: "sum", 154: "super", 155: "throw", 156: "to_bytes", 157: "tuple",
+    158: "type", 159: "update", 160: "upper", 161: "utf-8", 162: "value",
+    163: "values", 164: "write", 165: "zip", 166: "<dictcomp>",
+    167: "<genexpr>", 168: "<lambda>", 169: "<listcomp>", 170: "<setcomp>",
+    171: "__add__", 172: "__bool__", 173: "__complex__", 174: "__contains__",
+    175: "__eq__", 176: "__float__", 177: "__ge__", 178: "__gt__",
+    179: "__iadd__", 180: "__isub__", 181: "__le__", 182: "__lt__",
+    183: "__ne__", 184: "__sub__",
+}
+
+# Lookup: string name -> Edison static qstr ID (same as EDISON_QSTR_IDS, minus empty string)
+_EDISON_NAME_TO_QSTR = {k: v for k, v in EDISON_QSTR_IDS.items() if k}
+
+
+def _read_varint(data, offset):
+    """Read a variable-length unsigned integer from bytes. Returns (value, new_offset)."""
+    result = 0
+    while True:
+        b = data[offset]
+        offset += 1
+        result = (result << 7) | (b & 0x7F)
+        if not (b & 0x80):
+            return result, offset
+
+
+def _encode_varint(value):
+    """Encode an unsigned integer as a variable-length byte sequence."""
+    if value == 0:
+        return bytes([0])
+    parts = []
+    while value:
+        parts.append(value & 0x7F)
+        value >>= 7
+    parts.reverse()
+    result = bytes([b | 0x80 for b in parts[:-1]] + [parts[-1]])
+    return result
+
+
+def rewrite_mpy_qstrs(mpy_data):
+    """
+    Post-process an .mpy file to rewrite its qstr table for Edison firmware.
+
+    The Edison firmware has a different qstr table from standard MicroPython.
+    This function performs two transformations:
+
+    1. Dynamic qstrs that match Edison API names → Edison static qstr IDs
+       (e.g., "Ed" → static ID 14, "Drive" → static ID 11)
+
+    2. Standard static qstrs whose ID differs between standard and Edison
+       → remapped to Edison static qstr ID
+       (e.g., standard "count" at ID 74 → Edison ID for "count")
+    """
+    if len(mpy_data) < 4 or mpy_data[0] != ord('M'):
+        raise ValueError("Not a valid .mpy file")
+
+    header = mpy_data[:4]
+    offset = 4
+
+    n_qstr, offset = _read_varint(mpy_data, offset)
+    n_obj, offset = _read_varint(mpy_data, offset)
+
+    new_qstr_data = bytearray()
+    remapped = 0
+    for i in range(n_qstr):
+        val, new_offset = _read_varint(mpy_data, offset)
+        if val & 1:
+            # Standard static qstr reference
+            std_id = val >> 1
+            std_name = STANDARD_QSTR_STRINGS.get(std_id, "")
+            if std_name in _EDISON_NAME_TO_QSTR:
+                # Remap to Edison's ID for this string
+                edison_id = _EDISON_NAME_TO_QSTR[std_name]
+                new_qstr_data.extend(_encode_varint((edison_id << 1) | 1))
+                if edison_id != std_id:
+                    remapped += 1
+            else:
+                # Keep as-is (same ID in both tables, or unused in Edison)
+                new_qstr_data.extend(_encode_varint(val))
+            offset = new_offset
+        else:
+            # Dynamic qstr: val>>1 is string length
+            str_len = val >> 1
+            string_bytes = mpy_data[new_offset:new_offset + str_len]
+            offset = new_offset + str_len + 1  # +1 for NUL
+
+            name = string_bytes.decode('utf-8')
+            if name in _EDISON_NAME_TO_QSTR:
+                # Rewrite as Edison static qstr reference
+                edison_id = _EDISON_NAME_TO_QSTR[name]
+                new_qstr_data.extend(_encode_varint((edison_id << 1) | 1))
+                remapped += 1
+            else:
+                # Keep as dynamic
+                new_qstr_data.extend(_encode_varint(val))
+                new_qstr_data.extend(string_bytes)
+                new_qstr_data.append(0)
+
+    result = bytearray(header)
+    result.extend(_encode_varint(n_qstr))
+    result.extend(_encode_varint(n_obj))
+    result.extend(new_qstr_data)
+    result.extend(mpy_data[offset:])
+
+    if remapped:
+        print(f"Remapped {remapped} qstr(s) to Edison firmware IDs.")
+
+    return bytes(result)
+
+
 def build_mpy_cross(mpy_cross_path: str):
     """Builds the mpy-cross executable if it doesn't exist."""
     if not os.path.exists(mpy_cross_path):
@@ -322,13 +683,28 @@ def compile_app(app_name: str, mpy_cross_path: str, use_local_compiler: bool) ->
     output_mpy_file = os.path.join(app_dir, "main.mpy")
 
     if use_local_compiler:
+        edpy_errors = validate_edpy(py_file_path)
+        if edpy_errors:
+            raise RuntimeError(f"EdPy validation failed:\n" + "\n".join(edpy_errors))
         build_mpy_cross(mpy_cross_path)
+        # Pre-process: inline Ed.CONSTANT values to match remote compiler
+        preprocessed_file = os.path.join(app_dir, "main.preprocessed.py")
+        inline_ed_constants(py_file_path, preprocessed_file)
         print(f"Compiling with local {mpy_cross_path}...")
-        try:
-            subprocess.run([mpy_cross_path, "-o", output_mpy_file, py_file_path], check=True)
-            print("Local compilation successful.")
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Local mpy-cross compilation failed: {e}")
+        result = subprocess.run(
+            [mpy_cross_path, "-s", "", "-o", output_mpy_file, preprocessed_file],
+            capture_output=True, text=True
+        )
+        os.remove(preprocessed_file)
+        if result.returncode != 0:
+            raise RuntimeError(f"Local compilation failed:\n{result.stderr.strip()}")
+        # Post-process: remap qstrs to Edison firmware IDs
+        with open(output_mpy_file, 'rb') as f:
+            mpy_data = f.read()
+        rewritten = rewrite_mpy_qstrs(mpy_data)
+        with open(output_mpy_file, 'wb') as f:
+            f.write(rewritten)
+        print("Local compilation successful.")
     else:
         compile_remotely(py_file_path, output_mpy_file)
 
@@ -364,7 +740,7 @@ def flash_app(mpy_file_path: str):
         usb.util.dispose_resources(dev)
 
 def main():
-    parser = argparse.ArgumentParser(description="Lore: Edison V3 MicroPython CLI Tool.")
+    parser = argparse.ArgumentParser(description="LORE: Edison V3 MicroPython CLI Tool.")
     parser.add_argument("--mpy-cross", 
                         default="./micropython-1.27.0/mpy-cross/build/mpy-cross",
                         help="Path to mpy-cross executable.")
@@ -373,8 +749,8 @@ def main():
 
     build_parser = subparsers.add_parser("build", help="Compile a LOGO or MicroPython application.")
     build_parser.add_argument("app_name", help="Name of the application to compile.")
-    build_parser.add_argument("--local-compile", action="store_true", 
-                              help="Use local mpy-cross compiler (experimental).")
+    build_parser.add_argument("--remote-compile", action="store_true",
+                              help="Use remote Edison API compiler instead of local mpy-cross.")
 
     flash_parser = subparsers.add_parser("flash", help="Flash a compiled application.")
     flash_parser.add_argument("app_name", help="Name of the application to flash.")
@@ -386,14 +762,15 @@ def main():
         sys.exit(1)
 
     try:
-        if args.command == "build" and not args.local_compile:
+        if args.command == "build" and args.remote_compile:
             try:
                 import requests
             except ImportError:
                 raise RuntimeError("'requests' library is required for remote compilation. Run: pip install requests")
 
         if args.command == "build":
-            compile_app(args.app_name, args.mpy_cross, args.local_compile)
+            use_local = not args.remote_compile
+            compile_app(args.app_name, args.mpy_cross, use_local)
             print(f"Application '{args.app_name}' built successfully.")
         elif args.command == "flash":
             mpy_file = os.path.join("apps", args.app_name, "main.mpy")

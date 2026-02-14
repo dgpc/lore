@@ -1,56 +1,98 @@
 # Project Plan & TODOs
 
-This document outlines the development plan and tasks for the `lore` project.
+This document outlines the development plan and tasks for the LORE project.
 
 ## Phase 1: Core Functionality (Completed)
 
 - [x] Reverse-engineer the Edison V3 WebUSB protocol.
-- [x] Create a Python CLI tool (`lore`) for flashing compiled MicroPython code.
+- [x] Create a Python CLI tool (LORE) for flashing compiled MicroPython code.
 - [x] Implement local `mpy-cross` build process via `Makefile`.
 - [x] Implement remote compilation via the official EdPy API.
-- [x] Refactor `lore` to use `build` and `flash` subcommands.
+- [x] Refactor LORE to use `build` and `flash` subcommands.
 - [x] Structure applications into an `apps/` directory.
 
-## Phase 2: LOGO to EdPy Transpiler
+## Phase 2: LOGO to EdPy Transpiler (Completed)
 
 The goal of this phase is to enhance the `build` command to automatically transpile a `.logo` file into a functional `main.py` file if one is present in the application directory.
 
-- [ ] **Transpiler Scaffolding:**
-    - [ ] Modify the `build` command's logic to detect `main.logo` and trigger a transpilation step.
-    - [ ] Implement the basic file I/O for reading a `.logo` file and writing a `.py` file.
+- [x] **Transpiler Scaffolding:**
+    - [x] Modify the `build` command's logic to detect `main.logo` and trigger a transpilation step.
+    - [x] Implement the basic file I/O for reading a `.logo` file and writing a `.py` file.
+    - [x] Replace ad-hoc string parser with Lark-based EBNF grammar (`logo.lark`).
 
-- [ ] **Implement Basic "Turtle" Graphics Commands:**
-    - [ ] Implement parsing for `FORWARD <value>` and `BACK <value>`, translating them to `Ed.Drive(Ed.FORWARD, Ed.SPEED_5, <value>)` and `Ed.Drive(Ed.BACKWARD, Ed.SPEED_5, <value>)` respectively.
-    - [ ] Implement parsing for `LEFT <degrees>` and `RIGHT <degrees>`, translating them to `Ed.Drive(Ed.SPIN_LEFT, Ed.SPEED_5, <degrees>)` and `Ed.Drive(Ed.SPIN_RIGHT, Ed.SPEED_5, <degrees>)` respectively.
+- [x] **Implement Basic "Turtle" Graphics Commands:**
+    - [x] Implement parsing for `FORWARD <value>` and `BACK <value>`, translating them to `Ed.Drive(Ed.FORWARD, Ed.SPEED_5, <value>)` and `Ed.Drive(Ed.BACKWARD, Ed.SPEED_5, <value>)` respectively.
+    - [x] Implement parsing for `LEFT <degrees>` and `RIGHT <degrees>`, translating them to `Ed.Drive(Ed.SPIN_LEFT, Ed.SPEED_5, <degrees>)` and `Ed.Drive(Ed.SPIN_RIGHT, Ed.SPEED_5, <degrees>)` respectively.
 
-- [ ] **Implement `REPEAT` Loop:**
-    - [ ] Implement parsing for the `REPEAT <count> [ <commands> ]` syntax.
-    - [ ] Translate this into a `for i in range(<count>):` loop in the generated Python code, with the inner `<commands>` correctly indented.
+- [x] **Implement `REPEAT` Loop:**
+    - [x] Implement parsing for the `REPEAT <count> [ <commands> ]` syntax.
+    - [x] Translate this into a `for i in range(<count>):` loop in the generated Python code, with the inner `<commands>` correctly indented.
 
-- [ ] **Implement Function Definition (`TO...END`):**
-    - [ ] Implement parsing for the `TO <function_name> ... END` block structure.
-    - [ ] Translate this into a Python function definition: `def <function_name>():`.
-    - [ ] Ensure that calls to the defined LOGO function are correctly translated into Python function calls.
-    - [ ] Consider support for arguments in LOGO functions.
+- [x] **Implement Function Definition (`TO...END`):**
+    - [x] Implement parsing for the `TO <function_name> <:params> ... END` block structure.
+    - [x] Translate this into a Python function definition: `def <function_name>(params):`.
+    - [x] Ensure that calls to the defined LOGO function are correctly translated into Python function calls.
+    - [x] Support function parameters (`:param` syntax) and arguments in function calls.
+    - [x] Support recursion via `def` emission (not inlining).
 
-## Phase 3: Make Local Compilation Reliable
+- [x] **Implement Control Flow (`IF`, `IFELSE`):**
+    - [x] Implement `IF condition [ instructions ]` with comparison operators (`>`, `<`, `>=`, `<=`, `=`).
+    - [x] Implement `IFELSE condition [ true instructions ] [ false instructions ]`.
 
-The goal of this phase is to make the experimental `--local-compile` feature robust and reliable, providing the same level of correctness and feedback as the remote API.
+- [x] **Implement Variables (`MAKE`, `THING`, `:shorthand`):**
+    - [x] Implement `MAKE "varName value` for variable assignment.
+    - [x] Implement `THING "varName` for variable access in expressions.
+    - [x] Implement `:varName` shorthand for variable access.
 
-- [ ] **Acquire Compatible `mpy-cross` Version:**
-    - [ ] Research MicroPython release history to find a version corresponding to `mpy-cross` v1.2.0.
-    - [ ] If found, update the `Makefile` to download and build this specific version.
-    - [ ] Test the output of the acquired `mpy-cross` version against the remote API to confirm byte-for-byte compatibility.
+- [x] **Implement Arithmetic Expressions:**
+    - [x] Support `+` and `-` operators in expressions.
+    - [x] Support parenthesized sub-expressions.
+    - [x] Allow expressions (not just literals) in command arguments.
 
-- [ ] **Define the EdPy Python Subset:**
-    - [ ] Create a suite of small test programs, each exercising a specific Python feature (e.g., list comprehensions, dictionary literals, different loop types, string formatting).
-    - [ ] Run each test program against the remote API compiler.
-    - [ ] Document which features are supported and which are not, creating a clear "EdPy Language Specification" in the project documentation.
+- [x] **Test Suite:**
+    - [x] `apps/logo_test` — basic movement commands.
+    - [x] `apps/logo_circles` — function definitions with nested loops.
+    - [x] `apps/logo_square` — single-line repeat.
+    - [x] `apps/logo_nested` — nested repeats without functions.
+    - [x] `apps/logo_multifunction` — multiple functions calling each other.
+    - [x] `apps/logo_recursive` — recursive function with parameters and IF.
+    - [x] `apps/logo_variables` — MAKE, THING, IFELSE, arithmetic expressions.
+    - [x] All test apps validated against the remote Edison compiler.
 
-- [ ] **Improve Local Compilation Error Handling:**
-    - [ ] Investigate how `mpy-cross` reports syntax errors.
-    - [ ] Modify the `compile_app` function in `lore` to capture and parse `stderr` from the `mpy-cross` subprocess.
-    - [ ] Format the local compilation errors to be as clear and informative as the JSON-formatted errors from the remote API.
+## Phase 3: Make Local Compilation Reliable (Completed)
+
+The goal of this phase was to make local compilation produce byte-identical output to the remote Edison compiler API, enabling fully offline development. Local compilation is now the default.
+
+- [x] **Verify `mpy-cross` Compatibility:**
+    - [x] MicroPython 1.27.0 `mpy-cross` produces mpy v6 format with 31-bit small ints — matching the remote compiler's header.
+    - [x] All 12 test apps (7 LOGO + 4 EdPy + nursery_rhymes) produce byte-identical `.mpy` output between local and remote compilation.
+
+- [x] **Reverse-Engineer Edison Firmware Qstr Table:**
+    - [x] Discovered that the Edison firmware has a completely different qstr table from standard MicroPython — standard names like `count` (ID 74 → 118), `range` (ID 124 → 168) are remapped.
+    - [x] Mapped 29 Edison API names (Ed, Drive, PlayBeep, TimeWait, etc.) to their firmware qstr IDs by comparing remote vs local .mpy output.
+    - [x] Mapped 54 standard Python builtins/names to their Edison firmware qstr IDs by probing the remote compiler API.
+    - [x] Discovered that the remote compiler inlines `Ed.CONSTANT` references as integer literals (e.g., `Ed.FORWARD` → `1`, `Ed.TEMPO_MEDIUM` → `125`).
+
+- [x] **Implement Local Compilation Pipeline:**
+    - [x] **EdPy validator** (`EdPyValidator`): AST-based checker that rejects floats, strings, bytes, lists, dicts, tuples, sets, non-Ed imports, try/except, classes — matching remote compiler restrictions. Allows strings inside `Ed.TuneString()` calls.
+    - [x] **Constant inliner** (`inline_ed_constants`): Regex-based source transform that replaces `Ed.CONSTANT` with integer values, preserving original line structure for correct bytecode line numbers.
+    - [x] **mpy-cross compilation**: Uses `-s ""` flag for empty source filename matching remote output.
+    - [x] **Qstr remapper** (`rewrite_mpy_qstrs`): Post-processes `.mpy` files to rewrite the qstr table — converts dynamic Edison API names to static IDs, and remaps standard Python static qstrs to Edison firmware IDs.
+
+- [x] **Define the EdPy Python Subset:**
+    - [x] `apps/edpy_test_loops` — `for`, `while`, `range()`, nested loops.
+    - [x] `apps/edpy_test_conditionals` — `if`/`elif`/`else`, comparison operators.
+    - [x] `apps/edpy_test_functions` — `def`, `return`, parameters, recursion.
+    - [x] `apps/edpy_test_variables` — assignment, arithmetic, `abs()`.
+    - [x] `apps/edpy_test_unsupported` — documents unsupported features (strings, floats, lists, dicts, imports).
+
+- [x] **Improve Local Compilation Error Handling:**
+    - [x] Captures `mpy-cross` stderr and displays formatted syntax errors.
+    - [x] EdPy validator provides clear per-line errors for unsupported features.
+
+- [x] **Validate on Robot Hardware:**
+    - [x] Output is byte-identical to remote compiler, so this is a formality.
+    - [x] Local compilation is now the default (`--remote-compile` available as fallback).
 
 ## Phase 4: Bootable Dev Environment
 

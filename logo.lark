@@ -1,0 +1,48 @@
+start: statement+
+
+statement: forward | back | left | right | repeat | ifstmt | ifelsestmt | make | funcdef | funccall
+
+forward: FORWARD expr
+back: BACK expr
+left: LEFT expr
+right: RIGHT expr
+repeat: REPEAT expr "[" statement+ "]"
+ifstmt: IF comparison "[" statement+ "]"
+ifelsestmt: IFELSE comparison truebranch falsebranch
+truebranch: "[" statement+ "]"
+falsebranch: "[" statement+ "]"
+make: MAKE QNAME expr
+funcdef: TO NAME PARAM* statement+ END
+funccall: NAME expr*
+
+comparison: expr COMP_OP expr
+
+?expr: expr "+" atom -> add
+     | expr "-" atom -> sub
+     | atom
+?atom: NUMBER
+     | PARAM
+     | thing
+     | "(" expr ")"
+
+thing: THING QNAME
+
+FORWARD: /FORWARD/i
+BACK: /BACK/i
+LEFT: /LEFT/i
+RIGHT: /RIGHT/i
+REPEAT: /REPEAT/i
+TO: /TO/i
+END: /END/i
+IFELSE: /IFELSE/i
+IF: /IF/i
+MAKE: /MAKE/i
+THING: /THING/i
+COMP_OP: ">=" | "<=" | ">" | "<" | "="
+PARAM: /:[A-Za-z_]\w*/
+QNAME: /"[A-Za-z_]\w*/
+NAME: /(?!(?:FORWARD|BACK|LEFT|RIGHT|REPEAT|TO|END|IF|IFELSE|MAKE|THING)\b)[A-Za-z_]\w*/i
+
+%import common.INT -> NUMBER
+%import common.WS
+%ignore WS
