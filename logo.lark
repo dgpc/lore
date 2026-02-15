@@ -1,6 +1,10 @@
 start: statement+
 
 statement: forward | back | left | right | repeat | ifstmt | ifelsestmt | make | funcdef | funccall
+         | ledon | ledoff | leftledon | leftledoff | rightledon | rightledoff
+         | beep | playtone | wait | waitms | stop
+         | forever | whilestmt
+         | obstaclebeamon | obstaclebeamoff | linetrackeron | linetrackeroff | resetdistance
 
 forward: FORWARD expr
 back: BACK expr
@@ -12,18 +16,49 @@ ifelsestmt: IFELSE comparison truebranch falsebranch
 truebranch: "[" statement+ "]"
 falsebranch: "[" statement+ "]"
 make: MAKE QNAME expr
+ledon: LEDON
+ledoff: LEDOFF
+leftledon: LEFTLEDON
+leftledoff: LEFTLEDOFF
+rightledon: RIGHTLEDON
+rightledoff: RIGHTLEDOFF
+beep: BEEP
+playtone: PLAYTONE expr expr
+wait: WAIT expr
+waitms: WAITMS expr
+stop: STOP
+forever: FOREVER "[" statement+ "]"
+whilestmt: WHILE comparison "[" statement+ "]"
+obstaclebeamon: OBSTACLEBEAMON
+obstaclebeamoff: OBSTACLEBEAMOFF
+linetrackeron: LINETRACKERON
+linetrackeroff: LINETRACKEROFF
+resetdistance: RESETDISTANCE
 funcdef: TO NAME PARAM* statement+ END
 funccall: NAME expr*
 
 comparison: expr COMP_OP expr
 
-?expr: expr "+" atom -> add
-     | expr "-" atom -> sub
+?expr: expr "+" term -> add
+     | expr "-" term -> sub
+     | term
+?term: term "*" atom -> mul
+     | term "/" atom -> div
      | atom
 ?atom: NUMBER
      | PARAM
      | thing
+     | readkeypad | readobstacle | readclap | readline
+     | readleftlight | readrightlight | readdistance
      | "(" expr ")"
+
+readkeypad: READKEYPAD
+readobstacle: READOBSTACLE
+readclap: READCLAP
+readline: READLINE
+readleftlight: READLEFTLIGHT
+readrightlight: READRIGHTLIGHT
+readdistance: READDISTANCE
 
 thing: THING QNAME
 
@@ -38,10 +73,35 @@ IFELSE: /IFELSE/i
 IF: /IF/i
 MAKE: /MAKE/i
 THING: /THING/i
+LEDON: /LEDON/i
+LEDOFF: /LEDOFF/i
+LEFTLEDON: /LEFTLEDON/i
+LEFTLEDOFF: /LEFTLEDOFF/i
+RIGHTLEDON: /RIGHTLEDON/i
+RIGHTLEDOFF: /RIGHTLEDOFF/i
+BEEP: /BEEP/i
+PLAYTONE: /PLAYTONE/i
+WAIT: /WAIT(?!MS)/i
+WAITMS: /WAITMS/i
+STOP: /STOP/i
+FOREVER: /FOREVER/i
+WHILE: /WHILE/i
+OBSTACLEBEAMON: /OBSTACLEBEAMON/i
+OBSTACLEBEAMOFF: /OBSTACLEBEAMOFF/i
+LINETRACKERON: /LINETRACKERON/i
+LINETRACKEROFF: /LINETRACKEROFF/i
+RESETDISTANCE: /RESETDISTANCE/i
+READKEYPAD: /READKEYPAD/i
+READOBSTACLE: /READOBSTACLE/i
+READCLAP: /READCLAP/i
+READLINE: /READLINE/i
+READLEFTLIGHT: /READLEFTLIGHT/i
+READRIGHTLIGHT: /READRIGHTLIGHT/i
+READDISTANCE: /READDISTANCE/i
 COMP_OP: ">=" | "<=" | ">" | "<" | "="
 PARAM: /:[A-Za-z_]\w*/
 QNAME: /"[A-Za-z_]\w*/
-NAME: /(?!(?:FORWARD|BACK|LEFT|RIGHT|REPEAT|TO|END|IF|IFELSE|MAKE|THING)\b)[A-Za-z_]\w*/i
+NAME: /(?!(?:FORWARD|BACK|LEFT|RIGHT|REPEAT|TO|END|IF|IFELSE|MAKE|THING|LEDON|LEDOFF|LEFTLEDON|LEFTLEDOFF|RIGHTLEDON|RIGHTLEDOFF|BEEP|PLAYTONE|WAIT|WAITMS|STOP|FOREVER|WHILE|OBSTACLEBEAMON|OBSTACLEBEAMOFF|LINETRACKERON|LINETRACKEROFF|RESETDISTANCE|READKEYPAD|READOBSTACLE|READCLAP|READLINE|READLEFTLIGHT|READRIGHTLIGHT|READDISTANCE)\b)[A-Za-z_]\w*/i
 
 %import common.INT -> NUMBER
 %import common.WS

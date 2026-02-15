@@ -86,8 +86,26 @@ class LogoToEdPyTranspiler:
             return f"({self._process_expr(node.children[0])} + {self._process_expr(node.children[1])})"
         elif node.data == "sub":
             return f"({self._process_expr(node.children[0])} - {self._process_expr(node.children[1])})"
+        elif node.data == "mul":
+            return f"({self._process_expr(node.children[0])} * {self._process_expr(node.children[1])})"
+        elif node.data == "div":
+            return f"({self._process_expr(node.children[0])} // {self._process_expr(node.children[1])})"
         elif node.data == "thing":
             return str(self._tokens(node, "QNAME")[0])[1:].lower()
+        elif node.data == "readkeypad":
+            return "Ed.ReadKeypad()"
+        elif node.data == "readobstacle":
+            return "Ed.ReadObstacleDetection()"
+        elif node.data == "readclap":
+            return "Ed.ReadClapSensor()"
+        elif node.data == "readline":
+            return "Ed.ReadLineState()"
+        elif node.data == "readleftlight":
+            return "Ed.ReadLeftLightLevel()"
+        elif node.data == "readrightlight":
+            return "Ed.ReadRightLightLevel()"
+        elif node.data == "readdistance":
+            return "Ed.ReadDistance(Ed.MOTOR_LEFT)"
         return str(node)
 
     def _process_node(self, node, indent_level):
@@ -149,6 +167,58 @@ class LogoToEdPyTranspiler:
             expr_children = [c for c in node.children if not (isinstance(c, Token) and c.type in ("MAKE", "QNAME"))]
             expr = self._process_expr(expr_children[0])
             return [indent + f"{varname} = {expr}"]
+        elif data == "ledon":
+            return [indent + "Ed.LeftLed(Ed.ON)", indent + "Ed.RightLed(Ed.ON)"]
+        elif data == "ledoff":
+            return [indent + "Ed.LeftLed(Ed.OFF)", indent + "Ed.RightLed(Ed.OFF)"]
+        elif data == "leftledon":
+            return [indent + "Ed.LeftLed(Ed.ON)"]
+        elif data == "leftledoff":
+            return [indent + "Ed.LeftLed(Ed.OFF)"]
+        elif data == "rightledon":
+            return [indent + "Ed.RightLed(Ed.ON)"]
+        elif data == "rightledoff":
+            return [indent + "Ed.RightLed(Ed.OFF)"]
+        elif data == "beep":
+            return [indent + "Ed.PlayBeep()"]
+        elif data == "playtone":
+            note = self._process_expr(node.children[1])
+            duration = self._process_expr(node.children[2])
+            return [indent + f"Ed.PlayTone({note}, {duration})"]
+        elif data == "wait":
+            expr = self._process_expr(node.children[1])
+            return [indent + f"Ed.TimeWait({expr}, Ed.TIME_SECONDS)"]
+        elif data == "waitms":
+            expr = self._process_expr(node.children[1])
+            return [indent + f"Ed.TimeWait({expr}, Ed.TIME_MILLISECONDS)"]
+        elif data == "stop":
+            return [indent + "Ed.Drive(Ed.STOP, 1, 1)"]
+        elif data == "forever":
+            lines = [indent + "while True:"]
+            for child_stmt in self._subtrees(node):
+                lines.extend(self._process_node(child_stmt.children[0], indent_level + 1))
+            return lines
+        elif data == "whilestmt":
+            comp = self._subtrees(node)[0]  # comparison node
+            left = self._process_expr(comp.children[0])
+            op = str(self._tokens(comp, "COMP_OP")[0])
+            if op == "=":
+                op = "=="
+            right = self._process_expr(comp.children[2])
+            lines = [indent + f"while {left} {op} {right}:"]
+            for child_stmt in self._subtrees(node)[1:]:
+                lines.extend(self._process_node(child_stmt.children[0], indent_level + 1))
+            return lines
+        elif data == "obstaclebeamon":
+            return [indent + "Ed.ObstacleDetectionBeam(Ed.ON)"]
+        elif data == "obstaclebeamoff":
+            return [indent + "Ed.ObstacleDetectionBeam(Ed.OFF)"]
+        elif data == "linetrackeron":
+            return [indent + "Ed.LineTrackerLed(Ed.ON)"]
+        elif data == "linetrackeroff":
+            return [indent + "Ed.LineTrackerLed(Ed.OFF)"]
+        elif data == "resetdistance":
+            return [indent + "Ed.ResetDistance()"]
         elif data == "funccall":
             name = str(self._tokens(node, "NAME")[0]).upper()
             if name not in self.functions:
@@ -393,6 +463,8 @@ EDISON_CONSTANTS = {
     "LINE_ON_BLACK": 1, "LINE_ON_WHITE": 0,
     "CLAP_NOT_DETECTED": 0, "CLAP_DETECTED": 4,
     "DISTANCE_UNLIMITED": 1073741823,
+    "MOTOR_LEFT": 0, "MOTOR_RIGHT": 1,
+    "SPEED_FULL": 0,
 }
 
 

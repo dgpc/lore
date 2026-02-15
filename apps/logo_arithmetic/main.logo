@@ -1,0 +1,6 @@
+MAKE "x 10 * 5
+MAKE "y 100 / 4
+FORWARD :x
+RIGHT :y
+FORWARD 3 * 2 + 1
+BACK 10 + 2 * 3
